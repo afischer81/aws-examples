@@ -55,7 +55,7 @@ class Test03(unittest.TestCase):
         self.assertEqual(len(response), len(files))
         self.assertFalse(None in response)
 
-#@unittest.skip("Skipping Test03a")
+@unittest.skip("Skipping Test03a")
 class Test03a(unittest.TestCase):
 
     def test_delete(self):
@@ -111,9 +111,23 @@ class Test07(unittest.TestCase):
         if not instance['State']['Name'] == "running":
             response = aws.start_instance(test_instance_id, True)
             log.debug(response)
-            self.assertTrue(response['State']['Name'], "stopped")
+            self.assertTrue(response['State']['Name'], "running")
         response = aws.send_commands(test_instance_id, [ 'ifconfig' ], wait=True)
         log.debug(response)
+
+#@unittest.skip("Skipping Test08")
+class Test08(unittest.TestCase):
+
+    def test_send_commands(self):
+        instance = aws.get_instance(test_instance_id)
+        if not instance['State']['Name'] == "running":
+            response = aws.start_instance(test_instance_id, True)
+            log.debug(response)
+            self.assertTrue(response['State']['Name'], "running")
+        response = aws.send_commands(test_instance_id, [ '#!/bin/bash', 'cd /home/ec2-user', 'su -c "ls -al" ec2-user' ], wait=True)
+        self.assertIsNotNone(response)
+        self.assertTrue('StandardOutputContent' in response)
+        print(response['StandardOutputContent'])
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

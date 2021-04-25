@@ -31,7 +31,7 @@ class AWS(object):
                 InstanceId=instance_id
             )
         except ClientError as e:
-            self.log.error(e)        
+            self.log.error(e)
         return response
 
     def create_key_pair(self, name):
@@ -72,7 +72,7 @@ class AWS(object):
         except ClientError as e:
             self.log.error(e)
         return response
-        
+
     def delete_key_pair(self, name):
         response = self.ec2.delete_key_pair(KeyName=name)
         return response
@@ -115,6 +115,13 @@ class AWS(object):
     def get_buckets(self):
         return list(self.s3.buckets.all())
 
+    def get_command_output(self, instance_id, command_id):
+        response = self.ssm.get_command_invocation(
+            CommandId=command_id,
+            InstanceId=instance_id
+        )
+        return response
+
     def get_instances(self):
         return self.ec2.describe_instances()
 
@@ -131,25 +138,44 @@ class AWS(object):
         return self.ec2.describe_key_pairs()
 
     def send_command(self, instance_id, command, comment='', wait=False):
-        response = self.ssm.send_command(
-            InstanceIds=[instance_id],
-            DocumentName="AWS-RunShellScript",
-            Comment=comment,
-            Parameters={ 'command': [ command ] }
-        )
-        if wait:
+        for i in range(3):
+            try:
+                response = self.ssm.send_command(
+                    InstanceIds=[instance_id],
+                    DocumentName="AWS-RunShellScript",
+                    Comment=comment,
+                    Parameters={ 'command': [ command ] }
+                )
+            except:
+                self.log.error('instance {} may not be fully up, waiting ...'.format(instance_id))
+                time.sleep(15)
+                response = None
+                pass
+        if wait and not response is None:
             response = self.wait_for_ssm_command(response)
         return response
 
     def send_commands(self, instance_id, commands=[], comment='', wait=False):
-        response = self.ssm.send_command(
-            InstanceIds=[instance_id],
-            DocumentName="AWS-RunShellScript",
-            Comment=comment,
-            Parameters={ 'commands': commands }
-        )
-        if wait:
+        for i in range(3):
+            try:
+                response = self.ssm.send_command(
+                    InstanceIds=[instance_id],
+                    DocumentName="AWS-RunShellScript",
+                    Comment=comment,
+                    Parameters={ 'commands': commands }
+                )
+            except:
+                self.log.error('instance {} may not be fully up, waiting ...'.format(instance_id))
+                time.sleep(15)
+                response = None
+                pass
+        if wait and not response is None:
+            self.log.info('waiting for {}'.format(commands))
             response = self.wait_for_ssm_command(response)
+            # get commmand output
+            if not response is None and 'Commands' in response.keys() and len(response['Commands']) > 0:
+                command_id = response['Commands'][0]['CommandId']
+                response = self.get_command_output(instance_id, command_id)
         return response
 
     def reboot_instance(self, id, wait=False):
@@ -167,19 +193,7 @@ class AWS(object):
             self.log.error(e)
         return response
 
-    def _instance_wait_for_state(self, id, state, timeout=300):
-        info = {}
-        t = 0
-        while t < timeout:
-            info = self.get_instance(id)
-            self.log.debug('instance {} state {}'.format(id, info['State']['Name']))
-            if info['State']['Name'] == state:
-                break
-            time.sleep(5)
-            t += 5
-        return info
-
-    def start_instance(self, id, wait=False):
+    def start_instance(self, id, wait=False, sleep_interval=10):
         # Do a dryrun first to verify permissions
         try:
             self.ec2.start_instances(InstanceIds=[id], DryRun=True)
@@ -196,11 +210,11 @@ class AWS(object):
             self.log.error(e)
 
         if wait:
-            response = self._instance_wait_for_state(id, 'running')
-            time.sleep(5)
+            response = self._instance_wait_for_state(id, 'running', interval=sleep_interval)
+            time.sleep(sleep_interval)
         return response
 
-    def stop_instance(self, id, wait=False):
+    def stop_instance(self, id, wait=False, sleep_interval=10):
         # Do a dryrun first to verify permissions
         try:
             self.ec2.stop_instances(InstanceIds=[id], DryRun=True)
@@ -216,7 +230,8 @@ class AWS(object):
             self.log.error(e)
 
         if wait:
-            response = self._instance_wait_for_state(id, 'stopped')
+            time.sleep(sleep_interval)
+            response = self._instance_wait_for_state(id, 'stopped', interval=sleep_interval)
         return response
 
     def upload(self, bucket, files):
@@ -229,17 +244,34 @@ class AWS(object):
             result.append(name)
         return result
 
-    def wait_for_ssm_command(self, command):
-        for repeat in range(30):
-            time.sleep(10)
+    def wait_for_ssm_command(self, command, timeout=300, interval=10):
+        response = None
+        for repeat in range(timeout // interval):
+            time.sleep(interval)
             response = self.ssm.list_commands(
                 CommandId=command['Command']['CommandId'])
             if not response.get('Commands', False):
                 return response
+            self.log.info('command {} {} {}'.format(
+                command['Command']['CommandId'],
+                command['Command']['Parameters']['commands'],
+                response['Commands'][0]['Status']))
             if response['Commands'][0]['Status'] in \
                     ('Success', 'Cancelled', 'Failed', 'TimedOut'):
                 return response
         raise Exception(
-            'Timed out waiting for an SSM command to finish.')
+            'Timed out after {} waiting for an SSM command to finish.'.format(timeout))
         return response
 
+    def _instance_wait_for_state(self, id, state, timeout=300, interval=5):
+        info = {}
+        t = 0
+        while t < timeout:
+            info = self.get_instance(id)
+            self.log.debug('instance {} state {}'.format(id, info['State']['Name']))
+            if info['State']['Name'] == state:
+                break
+            time.sleep(interval)
+            t += interval
+        self.log.debug('instance {} state {}'.format(id, info['State']['Name']))
+        return info
